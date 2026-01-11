@@ -19,8 +19,9 @@ public class RealityDistortion : ModuleRules
 			"GameplayStateTreeModule",
 			"UMG",
 			"Slate",
-			"RenderCore",  // Phase 1: 用于 SceneProxy 和渲染相关类
-			"Renderer"     // Phase 2+: 用于 MeshPassProcessor
+			"RenderCore",  // Phase 1: SceneProxy 相关
+			"Renderer",    // Phase 2+: MeshPassProcessor
+			"RHI"          // Phase 1: FRHIUniformBuffer 等 RHI 资源
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
