@@ -26,6 +26,17 @@ public class RealityDistortion : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
+		// Phase 2: 需要访问 Renderer 模块的 Private 头文件（如 DepthRendering.h）
+		// 这样才能在游戏模块中使用 DepthPass Shader 类型
+		string RendererPrivatePath = System.IO.Path.Combine(
+			EngineDirectory, "Source", "Runtime", "Renderer", "Private");
+		PublicIncludePaths.Add(RendererPrivatePath);
+
+		// TranslucentPassResource.h 等文件在 Internal 目录
+		string RendererInternalPath = System.IO.Path.Combine(
+			EngineDirectory, "Source", "Runtime", "Renderer", "Internal");
+		PublicIncludePaths.Add(RendererInternalPath);
+
 		PublicIncludePaths.AddRange(new string[] {
 			"RealityDistortion",
 			"RealityDistortion/Rendering",  // Phase 1: 自定义渲染组件

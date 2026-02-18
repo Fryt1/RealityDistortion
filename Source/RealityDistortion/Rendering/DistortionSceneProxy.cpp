@@ -81,8 +81,7 @@ void FDistortionSceneProxy::GetDynamicMeshElements(
 	uint32 VisibilityMap,
 	FMeshElementCollector& Collector) const
 {
-	// 调试：确认函数被调用（这条日志会在渲染线程打印）
-	UE_LOG(LogTemp, Warning, TEXT("[DistortionProxy] GetDynamicMeshElements called! Views=%d"), Views.Num());
+	// 调试日志已移除（每帧调用，会刷屏）
 	
 	// ========================================
 	// 劫持策略：重写整个逻辑，自己填充 MeshBatch

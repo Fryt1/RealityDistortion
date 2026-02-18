@@ -29,4 +29,12 @@ public:
 	/** 用于替换的材质，在编辑器 Details 面板中可设置 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion")
 	TObjectPtr<UMaterialInterface> OverrideMaterial;
+
+	/** Phase 2: 空间过滤中心点 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Field")
+	FVector FieldCenter = FVector::ZeroVector;
+
+	/** Phase 2: 空间过滤半径 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Field")
+	float FieldRadius = 500.0f;
 };

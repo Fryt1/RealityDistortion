@@ -1,0 +1,40 @@
+{
+	"folders": [
+		{
+			"name": "RealityDistortion",
+			"path": "."
+		},
+		{
+			"name": "UE5",
+			"path": "../../../UnrealEngine/ue5.7.1/UnrealEngine/Engine"
+		}
+	],
+	"settings": {
+		"git.openRepositoryInParentFolders": "always",
+		"files.exclude": {
+			"**/.git": true,
+			"**/.idea": true,
+			"**/.vs": true,
+			"**/Binaries": true,
+			"**/Build": true,
+			"**/Content": true,
+			"**/DerivedDataCache": true,
+			"**/Documentation": true,
+			"**/Extras": true,
+			"**/Intermediate": true,
+			"**/Programs": true,
+			"**/Saved": true
+		},
+		"search.exclude": {
+			"**/Binaries": true,
+			"**/Build": true,
+			"**/Content": true,
+			"**/DerivedDataCache": true,
+			"**/Documentation": true,
+			"**/Extras": true,
+			"**/Intermediate": true,
+			"**/Programs": true,
+			"**/Saved": true
+		}
+	}
+}
