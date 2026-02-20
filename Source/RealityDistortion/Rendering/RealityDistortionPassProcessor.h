@@ -1,34 +1,29 @@
-// RealityDistortionPassProcessor.h
-// Phase 2 实战任务：自定义 MeshPassProcessor - 介入渲染管线的"决策层"
+﻿// RealityDistortionPassProcessor.h
+//
+// FRealityDistortionPassProcessor
+// ------------------------------
+// 这是 RealityDistortion Pass 的决策层：
+// 1) AddMeshBatch: 决定“画什么”（Receiver/空间/材质三层过滤）
+// 2) TryAddMeshBatch: 决定“是否可用当前材质 + 是否需要 DefaultMaterial 回退”
+// 3) Process: 决定“怎么画”（Shader/Pipeline/RenderState/DrawCommand）
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "MeshPassProcessor.h"
 
-/**
- * FRealityDistortionPassProcessor
- * 
- * 自定义的 MeshPassProcessor，控制"画什么"的决策。
- * 核心功能：根据 Primitive 与 FieldCenter 的距离，决定是否为其生成 MeshDrawCommand。
- * 
- * 三层决策逻辑：
- * 1. 空间过滤：距离 FieldCenter 超过 FieldRadius 的物体直接跳过
- * 2. 材质解析：获取有效材质，处理 Fallback 链
- * 3. 指令生成：配置 PSO + Shader，调用 BuildMeshDrawCommands
- */
-class FRealityDistortionPassProcessor : public FSceneRenderingAllocatorObject<FRealityDistortionPassProcessor>, public FMeshPassProcessor
+class FRealityDistortionPassProcessor
+	: public FSceneRenderingAllocatorObject<FRealityDistortionPassProcessor>
+	, public FMeshPassProcessor
 {
 public:
 	FRealityDistortionPassProcessor(
 		const FScene* Scene,
 		ERHIFeatureLevel::Type FeatureLevel,
 		const FSceneView* InViewIfDynamicMeshCommand,
-		FMeshPassDrawListContext* InDrawListContext,
-		const FVector& InFieldCenter,
-		float InFieldRadius);
+		FMeshPassDrawListContext* InDrawListContext);
 
-	// FMeshPassProcessor interface
+	// MeshPass 入口：每个候选 MeshBatch 都会走这里。
 	virtual void AddMeshBatch(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
@@ -36,6 +31,7 @@ public:
 		int32 StaticMeshId = -1) override final;
 
 private:
+	// 第二阶段过滤：处理 BlendMode/Domain，并做必要的材质回退。
 	bool TryAddMeshBatch(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
@@ -44,6 +40,7 @@ private:
 		const FMaterialRenderProxy& MaterialRenderProxy,
 		const FMaterial& Material);
 
+	// 最终构建 DrawCommand：查找 Shader、组装 RenderState、调用 BuildMeshDrawCommands。
 	bool Process(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
@@ -54,10 +51,5 @@ private:
 		ERasterizerFillMode MeshFillMode,
 		ERasterizerCullMode MeshCullMode);
 
-	/** 空间过滤参数 */
-	FVector FieldCenter;
-	float FieldRadius;
-
-	/** 渲染状态 */
 	FMeshPassProcessorRenderState PassDrawRenderState;
 };

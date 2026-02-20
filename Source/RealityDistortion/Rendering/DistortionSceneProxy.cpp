@@ -1,22 +1,18 @@
-// DistortionSceneProxy.cpp
-// Phase 1 实战任务：数据劫持 - 核心劫持逻辑
+﻿// DistortionSceneProxy.cpp
 
 #include "Rendering/DistortionSceneProxy.h"
-#include "Rendering/DistortionMeshComponent.h"
+
+#include "GameFramework/Actor.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialRenderProxy.h"
+#include "Rendering/DistortionMeshComponent.h"
 #include "SceneManagement.h"
 
 FDistortionSceneProxy::FDistortionSceneProxy(UDistortionMeshComponent* InComponent)
-	: FStaticMeshSceneProxy(InComponent, false)  // false = 不使用 LOD 过渡
-	, OverrideMaterialProxy(nullptr)
+	: FStaticMeshSceneProxy(InComponent, false)
 {
-	// 调试：确认构造函数被调用
-	UE_LOG(LogTemp, Warning, TEXT("[DistortionProxy] Constructor called!"));
-	
 #if WITH_EDITOR
-	// 将 OverrideMaterial 加入验证列表（正确的做法）
-	// SetUsedMaterialForVerification 是 FPrimitiveSceneProxy 提供的公开 API
+	// 编辑器验证：把 OverrideMaterial 加入 UsedMats，避免材质引用检查误报。
 	if (InComponent->OverrideMaterial)
 	{
 		TArray<UMaterialInterface*> UsedMats;
@@ -25,53 +21,69 @@ FDistortionSceneProxy::FDistortionSceneProxy(UDistortionMeshComponent* InCompone
 		SetUsedMaterialForVerification(UsedMats);
 	}
 #endif
-	
-	// ========================================
-	// 关键点：从 GameThread 拷贝数据到 RenderThread
-	// ========================================
-	// 构造函数在 GameThread 执行
-	// 把材质的 RenderProxy 缓存下来供 RenderThread 使用
-	
+
+	// 构造函数在 GT 执行，这里把 Receiver 配置拷贝到 Proxy 的纯数据字段。
+	// 后续 RT 不再访问 UDistortionMeshComponent，避免跨线程访问 UObject。
+	bEnableDistortionReceiver = InComponent->bEnableDistortionReceiver;
+
+	// 收集接收体标签（组件 + Actor），供 Field 在 RT 按 Tag 过滤。
+	for (const FName& ComponentTag : InComponent->ComponentTags)
+	{
+		if (!ComponentTag.IsNone())
+		{
+			ReceiverTags.AddUnique(ComponentTag);
+		}
+	}
+
+	if (const AActor* OwnerActor = InComponent->GetOwner())
+	{
+		for (const FName& ActorTag : OwnerActor->Tags)
+		{
+			if (!ActorTag.IsNone())
+			{
+				ReceiverTags.AddUnique(ActorTag);
+			}
+		}
+	}
+
 	if (InComponent->OverrideMaterial)
 	{
-		// GetRenderProxy() 返回的指针是线程安全的
+		// 缓存 RenderProxy，RT 直接使用。
 		OverrideMaterialProxy = InComponent->OverrideMaterial->GetRenderProxy();
-		UE_LOG(LogTemp, Warning, TEXT("[DistortionProxy] OverrideMaterial found, proxy cached!"));
 	}
 	else
 	{
-		// 没有指定材质时，使用引擎默认材质
-		UMaterial* DefaultMaterial = UMaterial::GetDefaultMaterial(MD_Surface);
-		if (DefaultMaterial)
+		// 没有覆盖材质时回退默认 Surface 材质。
+		if (UMaterial* DefaultMaterial = UMaterial::GetDefaultMaterial(MD_Surface))
 		{
 			OverrideMaterialProxy = DefaultMaterial->GetRenderProxy();
-			UE_LOG(LogTemp, Warning, TEXT("[DistortionProxy] Using default material!"));
 		}
 	}
 }
 
 FDistortionSceneProxy::~FDistortionSceneProxy()
 {
-	// FMaterialRenderProxy 由引擎管理，不需要手动释放
 }
 
-SIZE_T FDistortionSceneProxy::GetTypeHash() const
+SIZE_T FDistortionSceneProxy::GetStaticTypeHash()
 {
 	static size_t UniquePointer;
 	return reinterpret_cast<size_t>(&UniquePointer);
 }
 
+SIZE_T FDistortionSceneProxy::GetTypeHash() const
+{
+	return GetStaticTypeHash();
+}
+
 FPrimitiveViewRelevance FDistortionSceneProxy::GetViewRelevance(const FSceneView* View) const
 {
-	// 获取父类的视图相关性
 	FPrimitiveViewRelevance Result = FStaticMeshSceneProxy::GetViewRelevance(View);
-	
-	// 强制使用动态绘制路径！
-	// 这是关键：设置 bDynamicRelevance = true 会让渲染器调用 GetDynamicMeshElements
-	// 而不是使用缓存的静态绘制指令
+
+	// 强制走动态路径：每帧都会执行 GetDynamicMeshElements，材质劫持可实时生效。
 	Result.bDynamicRelevance = true;
-	Result.bStaticRelevance = false;  // 禁用静态路径
-	
+	Result.bStaticRelevance = false;
+
 	return Result;
 }
 
@@ -81,78 +93,73 @@ void FDistortionSceneProxy::GetDynamicMeshElements(
 	uint32 VisibilityMap,
 	FMeshElementCollector& Collector) const
 {
-	// 调试日志已移除（每帧调用，会刷屏）
-	
-	// ========================================
-	// 劫持策略：重写整个逻辑，自己填充 MeshBatch
-	// ========================================
-	
-	// 如果没有覆盖材质，回退到父类行为
+	// 没有覆盖材质时，回退父类逻辑。
 	if (OverrideMaterialProxy == nullptr)
 	{
 		FStaticMeshSceneProxy::GetDynamicMeshElements(Views, ViewFamily, VisibilityMap, Collector);
 		return;
 	}
 
-	// 使用父类的 RenderData 成员（已在构造函数中初始化）
+	// 没有可用的 RenderData 时直接退出。
 	if (RenderData == nullptr || RenderData->LODResources.Num() == 0)
 	{
 		return;
 	}
 
-	// 遍历每个 View（摄像机视角）
+	// ==============================
+	// 遍历每个可见 View（摄像机）
+	// ==============================
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
-		const FSceneView* View = Views[ViewIndex];
-		
-		// 检查可见性位图
-		if (!(VisibilityMap & (1 << ViewIndex)))
+		// 可见性位图过滤：当前 View 不可见则跳过。
+		if ((VisibilityMap & (1 << ViewIndex)) == 0)
 		{
 			continue;
 		}
 
-		// 使用 LOD 0（最高精度）简化实现
+		// 这里固定使用 LOD0，便于教学与调试；后续可按距离切换 LOD。
 		const int32 LODIndex = 0;
 		const FStaticMeshLODResources& LODModel = RenderData->LODResources[LODIndex];
 
-		// 遍历每个 Section（材质槽）
+		// 遍历 LOD 的每个 Section（材质槽）。
 		for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 		{
 			const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
 
-			// 从 Collector 分配空的 MeshBatch
+			// 向 Collector 申请一个新的 MeshBatch。
 			FMeshBatch& MeshBatch = Collector.AllocateMesh();
 
-			// ========================================
-			// 填充 MeshBatch
-			// ========================================
-			
-			// 1. 顶点工厂 - 告诉 GPU 顶点数据在哪里
+			// ----------------------------------------
+			// 1) VertexFactory + Material
+			// ----------------------------------------
+			// VertexFactory 决定顶点流如何绑定和解释。
 			MeshBatch.VertexFactory = &RenderData->LODVertexFactories[LODIndex].VertexFactory;
-			
-			// 2. 劫持点！用我们的材质替换原本的材质
+			// 劫持点：把原材质替换成 OverrideMaterialProxy。
 			MeshBatch.MaterialRenderProxy = OverrideMaterialProxy;
-			
-			// 3. 场景代理基本信息
+
+			// ----------------------------------------
+			// 2) 基础绘制状态
+			// ----------------------------------------
 			MeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
 			MeshBatch.Type = PT_TriangleList;
 			MeshBatch.DepthPriorityGroup = SDPG_World;
 			MeshBatch.LODIndex = LODIndex;
 			MeshBatch.bCanApplyViewModeOverrides = true;
 			MeshBatch.CastShadow = true;
-			
-			// 4. 索引缓冲信息
+
+			// ----------------------------------------
+			// 3) Section 索引范围
+			// ----------------------------------------
 			FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
 			BatchElement.IndexBuffer = &LODModel.IndexBuffer;
 			BatchElement.FirstIndex = Section.FirstIndex;
 			BatchElement.NumPrimitives = Section.NumTriangles;
 			BatchElement.MinVertexIndex = Section.MinVertexIndex;
 			BatchElement.MaxVertexIndex = Section.MaxVertexIndex;
-			
-			// 5. Primitive Uniform Buffer（变换矩阵等）
+			// PrimitiveUniformBuffer 提供 LocalToWorld 等每个 Primitive 的常量数据。
 			BatchElement.PrimitiveUniformBuffer = GetUniformBuffer();
 
-			// 提交 MeshBatch 到 Collector
+			// 最终提交给 Collector，后续进入 MeshPassProcessor 的 AddMeshBatch。
 			Collector.AddMesh(ViewIndex, MeshBatch);
 		}
 	}

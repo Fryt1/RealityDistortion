@@ -1,34 +1,30 @@
-// DistortionMeshComponent.cpp
-// Phase 1 实战任务：数据劫持 - 自定义组件实现
+﻿// DistortionMeshComponent.cpp
 
 #include "Rendering/DistortionMeshComponent.h"
-#include "Rendering/DistortionSceneProxy.h"
+
 #include "Materials/Material.h"
-#include "Engine/Engine.h"
+#include "Rendering/DistortionSceneProxy.h"
+#include "UObject/ConstructorHelpers.h"
 
 UDistortionMeshComponent::UDistortionMeshComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	// 加载引擎自带的 WorldGridMaterial 作为默认覆盖材质
-	// 你可以在编辑器 Details 面板中换成自己的材质
-	static ConstructorHelpers::FObjectFinder<UMaterial> RedMaterialFinder(
-		TEXT("/Engine/EngineMaterials/WorldGridMaterial")
-	);
-	
-	if (RedMaterialFinder.Succeeded())
+	// 默认给一个可见材质，便于未配置时直接看到“材质劫持是否生效”。
+	// 后续你可以在蓝图/细节面板替换为自己的 Distortion 材质。
+	static ConstructorHelpers::FObjectFinder<UMaterial> DefaultMaterialFinder(
+		TEXT("/Engine/EngineMaterials/WorldGridMaterial"));
+	if (DefaultMaterialFinder.Succeeded())
 	{
-		OverrideMaterial = RedMaterialFinder.Object;
+		OverrideMaterial = DefaultMaterialFinder.Object;
 	}
 }
 
 FPrimitiveSceneProxy* UDistortionMeshComponent::CreateSceneProxy()
 {
-	// ========================================
-	// 关键点：这是"劫持"的入口
-	// ========================================
-	// 正常情况：UStaticMeshComponent 返回 FStaticMeshSceneProxy
-	// 我们返回自定义的 FDistortionSceneProxy
-	
+	// ------------------------------
+	// 关键入口：切换到自定义 SceneProxy
+	// ------------------------------
+	// 这里做足前置检查，避免把无效资源带到 RT。
 	if (GetStaticMesh() == nullptr)
 	{
 		return nullptr;
@@ -44,6 +40,6 @@ FPrimitiveSceneProxy* UDistortionMeshComponent::CreateSceneProxy()
 		return nullptr;
 	}
 
-	// 创建并返回自定义 Proxy，引擎会管理其生命周期
+	// 交给 FDistortionSceneProxy，后续 MeshBatch 会在其 GetDynamicMeshElements 中被“劫持”。
 	return new FDistortionSceneProxy(this);
 }

@@ -1,5 +1,15 @@
-// DistortionMeshComponent.h
-// Phase 1 实战任务：数据劫持 - 自定义 SceneProxy 劫持材质
+﻿// DistortionMeshComponent.h
+//
+// UDistortionMeshComponent（Receiver）
+// ------------------------------------
+// 职责：
+// 1) 继承 UStaticMeshComponent，保持普通静态网格的编辑体验。
+// 2) 重写 CreateSceneProxy()，把渲染代理切换为 FDistortionSceneProxy。
+// 3) 提供接收体主开关与覆盖材质。
+//
+// 注意：
+// - 这个组件不负责“发射力场”，发射职责在 UDistortionFieldComponent。
+// - 这个组件不直接做渲染决策，真正决策在 FRealityDistortionPassProcessor::AddMeshBatch。
 
 #pragma once
 
@@ -7,12 +17,6 @@
 #include "Components/StaticMeshComponent.h"
 #include "DistortionMeshComponent.generated.h"
 
-/**
- * UDistortionMeshComponent
- * 
- * 继承自 UStaticMeshComponent，重写 CreateSceneProxy() 返回自定义的 FDistortionSceneProxy。
- * 目的：劫持渲染管线，在 GetDynamicMeshElements 中强制替换材质。
- */
 UCLASS(ClassGroup=(Rendering), meta=(BlueprintSpawnableComponent))
 class REALITYDISTORTION_API UDistortionMeshComponent : public UStaticMeshComponent
 {
@@ -21,20 +25,17 @@ class REALITYDISTORTION_API UDistortionMeshComponent : public UStaticMeshCompone
 public:
 	UDistortionMeshComponent(const FObjectInitializer& ObjectInitializer);
 
-	//~ Begin UPrimitiveComponent Interface
-	/** 重写此函数，返回我们自定义的 FDistortionSceneProxy */
+	// 通过自定义 SceneProxy 接入渲染管线。
+	// 之后该 Primitive 在 RT 会以 FDistortionSceneProxy 的形态参与收集与过滤。
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
-	//~ End UPrimitiveComponent Interface
 
-	/** 用于替换的材质，在编辑器 Details 面板中可设置 */
+	// Phase 1 材质劫持入口。
+	// DistortionSceneProxy::GetDynamicMeshElements 会把 MeshBatch.MaterialRenderProxy
+	// 替换为此材质的 RenderProxy。
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion")
 	TObjectPtr<UMaterialInterface> OverrideMaterial;
 
-	/** Phase 2: 空间过滤中心点 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Field")
-	FVector FieldCenter = FVector::ZeroVector;
-
-	/** Phase 2: 空间过滤半径 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Field")
-	float FieldRadius = 500.0f;
+	// Receiver 主开关：false 表示该组件永远不作为 Distortion 接收体。
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Receiver")
+	bool bEnableDistortionReceiver = true;
 };
