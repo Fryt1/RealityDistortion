@@ -57,7 +57,9 @@ void FRealityDistortionPassProcessor::AddMeshBatch(
 		return;
 	}
 
-	const FVector PrimitiveOrigin = PrimitiveSceneProxy->GetBounds().Origin;
+	const FBoxSphereBounds PrimitiveBounds = PrimitiveSceneProxy->GetBounds();
+	const FVector PrimitiveOrigin = PrimitiveBounds.Origin;
+	const float PrimitiveSphereRadius = FMath::Max(0.0f, PrimitiveBounds.SphereRadius);
 	bool bInsideAnyField = false;
 	for (const FRealityDistortionFieldSettings& Field : Fields)
 	{
@@ -72,8 +74,10 @@ void FRealityDistortionPassProcessor::AddMeshBatch(
 			continue;
 		}
 
+		// CPU 侧只做“包围球相交”粗筛，避免大模型边缘进场但原点在场外时被误剔除。
 		const float DistSq = FVector::DistSquared(PrimitiveOrigin, Field.Center);
-		if (DistSq <= FMath::Square(Field.Radius))
+		const float IntersectRadius = Field.Radius + PrimitiveSphereRadius;
+		if (DistSq <= FMath::Square(IntersectRadius))
 		{
 			bInsideAnyField = true;
 			break;
