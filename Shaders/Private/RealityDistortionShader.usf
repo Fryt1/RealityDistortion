@@ -1,0 +1,122 @@
+﻿// RealityDistortionShader.usf
+// Vertex/pixel shaders for RealityDistortion pass.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/SHCommon.ush"
+#include "/Engine/Generated/Material.ush"
+#include "/Engine/Generated/VertexFactory.ush"
+#include "/Plugin/RealityDistortion/Private/RealityDistortionCommon.ush"
+
+cbuffer RealityDistortionParameters
+{
+	uint ActiveFieldCount;
+	float GlobalDistortionScale;
+	float CurrentTime;
+	float GlitchSpeed;
+
+	float3 Field0_Center;
+	float Field0_Radius;
+	float Field0_Strength;
+	float Field0_Padding;
+
+	float3 Field1_Center;
+	float Field1_Radius;
+	float Field1_Strength;
+	float Field1_Padding;
+
+	float3 Field2_Center;
+	float Field2_Radius;
+	float Field2_Strength;
+	float Field2_Padding;
+
+	float3 Field3_Center;
+	float Field3_Radius;
+	float Field3_Strength;
+	float Field3_Padding;
+};
+
+float CalculateFieldInfluence(float3 WorldPosition, float3 Center, float Radius)
+{
+	if (Radius <= 0.001f)
+	{
+		return 0.0f;
+	}
+
+	float Distance = length(Center - WorldPosition);
+	float T = saturate(1.0f - (Distance / Radius));
+	// Smooth falloff from 1 at center to 0 at radius boundary.
+	return T * T * (3.0f - 2.0f * T);
+}
+
+float CalculateMaxInfluence(float3 WorldPosition)
+{
+	float MaxInfluence = 0.0f;
+
+	if (ActiveFieldCount > 0)
+	{
+		MaxInfluence = max(MaxInfluence, CalculateFieldInfluence(WorldPosition, Field0_Center, Field0_Radius));
+	}
+	if (ActiveFieldCount > 1)
+	{
+		MaxInfluence = max(MaxInfluence, CalculateFieldInfluence(WorldPosition, Field1_Center, Field1_Radius));
+	}
+	if (ActiveFieldCount > 2)
+	{
+		MaxInfluence = max(MaxInfluence, CalculateFieldInfluence(WorldPosition, Field2_Center, Field2_Radius));
+	}
+	if (ActiveFieldCount > 3)
+	{
+		MaxInfluence = max(MaxInfluence, CalculateFieldInfluence(WorldPosition, Field3_Center, Field3_Radius));
+	}
+
+	return MaxInfluence;
+}
+
+void MainVS(
+	FVertexFactoryInput Input,
+	out FVertexFactoryInterpolantsVSToPS FactoryInterpolants,
+	out float4 Position : SV_POSITION)
+{
+	ResolvedView = ResolveView();
+
+	FVertexFactoryIntermediates VFIntermediates = GetVertexFactoryIntermediates(Input);
+	float4 WorldPosition = VertexFactoryGetWorldPosition(Input, VFIntermediates);
+
+	// Keep geometry position aligned with BasePass clip area to avoid black gaps.
+	float4 DistortedWorldPosition = WorldPosition;
+	float4 RasterizedWorldPosition = VertexFactoryGetRasterizedWorldPosition(
+		Input,
+		VFIntermediates,
+		DistortedWorldPosition);
+	Position = mul(RasterizedWorldPosition, ResolvedView.TranslatedWorldToClip);
+
+	FMaterialVertexParameters VertexParameters = GetMaterialVertexParameters(
+		Input,
+		VFIntermediates,
+		DistortedWorldPosition.xyz,
+		float3x3(1, 0, 0, 0, 1, 0, 0, 0, 1));
+
+	FactoryInterpolants = VertexFactoryGetInterpolantsVSToPS(Input, VFIntermediates, VertexParameters);
+}
+
+void MainPS(
+	FVertexFactoryInterpolantsVSToPS FactoryInterpolants,
+	in float4 SvPosition : SV_Position,
+	out float4 OutColor : SV_Target0)
+{
+	ResolvedView = ResolveView();
+	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(FactoryInterpolants, SvPosition);
+	// Use material-parameter pre-view translation so both passes share the same LWC basis.
+	float3 WorldPos = WSHackToFloat(WSSubtract(MaterialParameters.WorldPosition_CamRelative, GetPreViewTranslation(MaterialParameters)));
+	float Influence = saturate(CalculateMaxInfluence(WorldPos));
+
+	// 力场范围外的像素直接丢弃，不画任何东西。
+	clip(Influence - 0.001f);
+
+	// 简化测试：直接输出蓝色，根据 Influence 调整亮度
+	float3 FragmentColor = float3(0.1, 0.5, 1.0) * (0.5 + Influence * 0.5);
+
+	// 输出不透明颜色
+	OutColor = float4(FragmentColor, 1.0);
+}
+                        

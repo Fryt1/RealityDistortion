@@ -3,10 +3,23 @@
 #include "Rendering/DistortionSceneProxy.h"
 
 #include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialRenderProxy.h"
 #include "Rendering/DistortionMeshComponent.h"
 #include "SceneManagement.h"
+
+namespace
+{
+	// 方案 1 的快速实验开关：
+	// 0 = 保持单面（默认，阴影/体积观感更稳定）
+	// 1 = 双面渲染 receiver（会减少穿帮，但可能出现“空壳透视感”）
+	static TAutoConsoleVariable<int32> CVarRealityDistortionReceiverTwoSided(
+		TEXT("r.RealityDistortion.ReceiverTwoSided"),
+		0,
+		TEXT("Force receiver mesh batches to disable backface culling. 0=Off, 1=On"),
+		ECVF_RenderThreadSafe);
+}
 
 FDistortionSceneProxy::FDistortionSceneProxy(UDistortionMeshComponent* InComponent)
 	: FStaticMeshSceneProxy(InComponent, false)
@@ -145,6 +158,8 @@ void FDistortionSceneProxy::GetDynamicMeshElements(
 			MeshBatch.DepthPriorityGroup = SDPG_World;
 			MeshBatch.LODIndex = LODIndex;
 			MeshBatch.bCanApplyViewModeOverrides = true;
+			MeshBatch.bDisableBackfaceCulling =
+				(CVarRealityDistortionReceiverTwoSided.GetValueOnAnyThread() != 0);
 			MeshBatch.CastShadow = true;
 
 			// ----------------------------------------

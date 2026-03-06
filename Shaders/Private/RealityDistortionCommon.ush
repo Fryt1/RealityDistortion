@@ -1,0 +1,119 @@
+// RealityDistortionCommon.ush
+// Shared field influence calculation for both BasePass discard and RealityDistortion pass.
+// Include this after Common.ush and after ResolvedView is available.
+
+#ifndef REALITY_DISTORTION_COMMON_USH
+#define REALITY_DISTORTION_COMMON_USH
+
+#ifndef MAX_DISTORTION_FIELDS
+#define MAX_DISTORTION_FIELDS 4
+#endif
+
+// Uniform buffer must be bound by the C++ side (or declared as cbuffer).
+// For BasePass injection, we use a scene-level uniform buffer.
+// Fields: ActiveFieldCount, FieldN_Center, FieldN_Radius, etc.
+
+float RD_CalculateFieldInfluence(float3 WorldPosition, float3 Center, float Radius)
+{
+	if (Radius <= 0.001f)
+	{
+		return 0.0f;
+	}
+
+	float Distance = length(Center - WorldPosition);
+	float T = saturate(1.0f - (Distance / Radius));
+	return T * T * (3.0f - 2.0f * T);
+}
+
+float RD_CalculateMaxInfluence(
+	float3 WorldPosition,
+	float3 PreViewTranslation,
+	uint FieldCount,
+	float3 Field0Center, float Field0Radius,
+	float3 Field1Center, float Field1Radius,
+	float3 Field2Center, float Field2Radius,
+	float3 Field3Center, float Field3Radius)
+{
+	float MaxInfluence = 0.0f;
+
+	if (FieldCount > 0)
+	{
+		MaxInfluence = max(MaxInfluence, RD_CalculateFieldInfluence(WorldPosition, Field0Center + PreViewTranslation, Field0Radius));
+	}
+	if (FieldCount > 1)
+	{
+		MaxInfluence = max(MaxInfluence, RD_CalculateFieldInfluence(WorldPosition, Field1Center + PreViewTranslation, Field1Radius));
+	}
+	if (FieldCount > 2)
+	{
+		MaxInfluence = max(MaxInfluence, RD_CalculateFieldInfluence(WorldPosition, Field2Center + PreViewTranslation, Field2Radius));
+	}
+	if (FieldCount > 3)
+	{
+		MaxInfluence = max(MaxInfluence, RD_CalculateFieldInfluence(WorldPosition, Field3Center + PreViewTranslation, Field3Radius));
+	}
+
+	return MaxInfluence;
+}
+
+// ============================================================================
+// Voronoi fracture helpers
+// ============================================================================
+
+// Hash function for 3D -> 3D random offset
+float3 RD_Hash3(float3 p)
+{
+	p = float3(
+		dot(p, float3(127.1f, 311.7f, 74.7f)),
+		dot(p, float3(269.5f, 183.3f, 246.1f)),
+		dot(p, float3(113.5f, 271.9f, 124.6f))
+	);
+	return frac(sin(p) * 43758.5453123f);
+}
+
+// Returns: x = distance to nearest cell center, y = distance to second nearest (for edge detection)
+float2 RD_Voronoi(float3 WorldPos, float CellSize)
+{
+	float3 p = WorldPos / CellSize;
+	float3 baseCell = floor(p);
+
+	float minDist = 100.0f;
+	float secondMinDist = 100.0f;
+
+	// Search 3x3x3 neighborhood
+	for (int x = -1; x <= 1; x++)
+	{
+		for (int y = -1; y <= 1; y++)
+		{
+			for (int z = -1; z <= 1; z++)
+			{
+				float3 neighborCell = baseCell + float3(x, y, z);
+				float3 cellCenter = neighborCell + RD_Hash3(neighborCell);
+				float d = length(p - cellCenter);
+
+				if (d < minDist)
+				{
+					secondMinDist = minDist;
+					minDist = d;
+				}
+				else if (d < secondMinDist)
+				{
+					secondMinDist = d;
+				}
+			}
+		}
+	}
+
+	return float2(minDist, secondMinDist);
+}
+
+// Edge distance: how close this pixel is to a voronoi cell boundary.
+// Returns 0 at edges, 1 at cell centers.
+float RD_VoronoiEdge(float3 WorldPos, float CellSize)
+{
+	float2 v = RD_Voronoi(WorldPos, CellSize);
+	// Edge = difference between second nearest and nearest
+	return saturate(v.y - v.x);
+}
+
+#endif // REALITY_DISTORTION_COMMON_USH

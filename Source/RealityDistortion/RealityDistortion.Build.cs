@@ -21,7 +21,8 @@ public class RealityDistortion : ModuleRules
 			"Slate",
 			"RenderCore",  // Phase 1: SceneProxy 相关
 			"Renderer",    // Phase 2+: MeshPassProcessor
-			"RHI"          // Phase 1: FRHIUniformBuffer 等 RHI 资源
+			"RHI",         // Phase 1: FRHIUniformBuffer 等 RHI 资源
+			"Projects"     // Phase 3: IPluginManager (用于注册 Shader 目录)
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

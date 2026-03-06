@@ -37,11 +37,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Field", meta = (ClampMin = "0.0"))
 	float FieldRadius = 500.0f;
 
+	// 力场强度（控制扭曲程度）。
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Field")
+	float FieldStrength = 1.0f;
+
 	// 力场匹配用 Tag。
 	// None：不做 Tag 过滤（命中半径即可）。
-	// 非 None：仅影响“组件 Tag 或 Actor Tag”命中该值的接收体。
+	// 非 None：仅影响”组件 Tag 或 Actor Tag”命中该值的接收体。
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Field")
 	FName ReceiverTagFilter = NAME_None;
+
+	// 是否显示调试可视化（编辑器中显示力场范围）
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Debug")
+	bool bShowDebugVisualization = false;
+
+	// 调试可视化颜色
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion|Debug")
+	FColor DebugColor = FColor::Cyan;
 
 private:
 	// 延迟创建 Handle，保证每个组件对应一个独立 Field 实例。

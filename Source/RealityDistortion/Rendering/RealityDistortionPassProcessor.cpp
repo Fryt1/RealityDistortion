@@ -5,8 +5,35 @@
 #include "MaterialShaderType.h"
 #include "Materials/Material.h"
 #include "MeshPassProcessor.inl"
+#include "HAL/IConsoleManager.h"
+#include "RealityDistortion.h"
 #include "RealityDistortionField.h"
 #include "Rendering/DistortionSceneProxy.h"
+#include "Rendering/RealityDistortionShaders.h"
+
+namespace
+{
+	// 任务 3：在 AddMeshBatch 流程里强制修改图元类型，用于观察“线框/点云瓦解”效果。
+	static TAutoConsoleVariable<int32> CVarRealityDistortionPrimitiveMode(
+		TEXT("r.RealityDistortion.PrimitiveMode"),
+		0,
+		TEXT("Primitive mode for RealityDistortion pass. 0=TriangleList, 1=LineList, 2=PointList"),
+		ECVF_RenderThreadSafe);
+
+	static EPrimitiveType GetRealityDistortionPrimitiveType()
+	{
+		const int32 Mode = FMath::Clamp(CVarRealityDistortionPrimitiveMode.GetValueOnAnyThread(), 0, 2);
+		switch (Mode)
+		{
+		case 1:
+			return PT_LineList;
+		case 2:
+			return PT_PointList;
+		default:
+			return PT_TriangleList;
+		}
+	}
+}
 
 FRealityDistortionPassProcessor::FRealityDistortionPassProcessor(
 	const FScene* Scene,
@@ -15,9 +42,10 @@ FRealityDistortionPassProcessor::FRealityDistortionPassProcessor(
 	FMeshPassDrawListContext* InDrawListContext)
 	: FMeshPassProcessor(EMeshPass::RealityDistortion, Scene, FeatureLevel, InViewIfDynamicMeshCommand, InDrawListContext)
 {
-	// 本 Pass 采用“类似深度 Pass”的基础状态：不混合，深度可写。
-	PassDrawRenderState.SetBlendState(TStaticBlendState<>::GetRHI());
-	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<true, CF_DepthNearOrEqual>::GetRHI());
+	// 使用 Alpha 混合，实现半透明力场球效果
+	PassDrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_SourceAlpha, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI());
+	// 开启深度测试，但不写入深度，避免覆盖后面的物体
+	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
 }
 
 void FRealityDistortionPassProcessor::AddMeshBatch(
@@ -48,9 +76,10 @@ void FRealityDistortionPassProcessor::AddMeshBatch(
 	}
 
 	// ==================================================
-	// 第二层：Field 过滤（Tag + 空间）
+	// 第二层：Field 粗筛（仅空间，不做 Tag）
 	// ==================================================
-	// 读取 RT 当前所有 Field，命中任意一个启用 Field 才继续。
+	// 这里保留包围球相交粗筛以减少无意义提交，但不使用 Tag 过滤，
+	// 避免与 BasePass 的 receiver 判定条件不一致导致“已挖洞但 RD 没提交”。
 	const TConstArrayView<FRealityDistortionFieldSettings> Fields = GetRealityDistortionFieldSettings_RenderThread();
 	if (Fields.IsEmpty())
 	{
@@ -58,9 +87,11 @@ void FRealityDistortionPassProcessor::AddMeshBatch(
 	}
 
 	const FBoxSphereBounds PrimitiveBounds = PrimitiveSceneProxy->GetBounds();
-	const FVector PrimitiveOrigin = PrimitiveBounds.Origin;
+	const FVector PrimitiveCenter = PrimitiveBounds.Origin;
 	const float PrimitiveSphereRadius = FMath::Max(0.0f, PrimitiveBounds.SphereRadius);
-	bool bInsideAnyField = false;
+
+	bool bIntersectsAnyPackedField = false;
+	uint32 PackedFieldCount = 0;
 	for (const FRealityDistortionFieldSettings& Field : Fields)
 	{
 		if (!Field.bEnabled || Field.Radius <= 0.0f)
@@ -68,23 +99,22 @@ void FRealityDistortionPassProcessor::AddMeshBatch(
 			continue;
 		}
 
-		// Field 指定了 Tag 时，只影响标签命中的接收体。
-		if (!DistortionProxy->HasReceiverTag(Field.ReceiverTagFilter))
+		++PackedFieldCount;
+		if (PackedFieldCount >= MAX_DISTORTION_FIELDS)
 		{
-			continue;
+			break;
 		}
-
-		// CPU 侧只做“包围球相交”粗筛，避免大模型边缘进场但原点在场外时被误剔除。
-		const float DistSq = FVector::DistSquared(PrimitiveOrigin, Field.Center);
+		
 		const float IntersectRadius = Field.Radius + PrimitiveSphereRadius;
+		const float DistSq = FVector::DistSquared(PrimitiveCenter, Field.Center);
 		if (DistSq <= FMath::Square(IntersectRadius))
 		{
-			bInsideAnyField = true;
+			bIntersectsAnyPackedField = true;
 			break;
 		}
 	}
 
-	if (!bInsideAnyField)
+	if (!bIntersectsAnyPackedField)
 	{
 		return;
 	}
@@ -94,23 +124,66 @@ void FRealityDistortionPassProcessor::AddMeshBatch(
 		return;
 	}
 
+	const EPrimitiveType PrimitiveTypeOverride = GetRealityDistortionPrimitiveType();
+	const FMeshBatch* EffectiveMeshBatch = &MeshBatch;
+	FMeshBatch OverriddenMeshBatch;
+
+	if (PrimitiveTypeOverride != MeshBatch.Type)
+	{
+		OverriddenMeshBatch = MeshBatch;
+		OverriddenMeshBatch.Type = PrimitiveTypeOverride;
+
+		// 源数据来自三角形网格。切到线/点时，按索引数量重算 NumPrimitives，避免非法读索引。
+		for (FMeshBatchElement& BatchElement : OverriddenMeshBatch.Elements)
+		{
+			const uint32 SourceIndexCount = BatchElement.NumPrimitives * 3u;
+			if (PrimitiveTypeOverride == PT_LineList)
+			{
+				BatchElement.NumPrimitives = SourceIndexCount / 2u;
+			}
+			else if (PrimitiveTypeOverride == PT_PointList)
+			{
+				BatchElement.NumPrimitives = SourceIndexCount;
+			}
+		}
+
+		EffectiveMeshBatch = &OverriddenMeshBatch;
+	}
+
 	// ==================================================
 	// 第三层：材质 fallback 链
 	// ==================================================
 	// 同 BasePass 思路：沿 MaterialRenderProxy->Fallback 链找可用 ShaderMap。
-	const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
+	bool bSubmitted = false;
+	const FMaterialRenderProxy* MaterialRenderProxy = EffectiveMeshBatch->MaterialRenderProxy;
 	while (MaterialRenderProxy)
 	{
 		const FMaterial* Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
 		if (Material && Material->GetRenderingThreadShaderMap())
 		{
-			if (TryAddMeshBatch(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, *MaterialRenderProxy, *Material))
+			if (TryAddMeshBatch(*EffectiveMeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, *MaterialRenderProxy, *Material))
 			{
+				bSubmitted = true;
 				break;
 			}
 		}
 
 		MaterialRenderProxy = MaterialRenderProxy->GetFallback(FeatureLevel);
+	}
+
+	// 某些工程材质不会为自定义 pass 编译对应 shader，兜底到默认 Surface 材质，
+	// 避免 BasePass 已 clip 但 Distortion pass 无法提交 DrawCommand 导致黑洞。
+	if (!bSubmitted)
+	{
+		if (UMaterial* DefaultMaterial = UMaterial::GetDefaultMaterial(MD_Surface))
+		{
+			const FMaterialRenderProxy* DefaultProxy = DefaultMaterial->GetRenderProxy();
+			const FMaterial* DefaultMat = DefaultProxy ? DefaultProxy->GetMaterialNoFallback(FeatureLevel) : nullptr;
+			if (DefaultMat && DefaultMat->GetRenderingThreadShaderMap())
+			{
+				TryAddMeshBatch(*EffectiveMeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, *DefaultProxy, *DefaultMat);
+			}
+		}
 	}
 }
 
@@ -138,27 +211,11 @@ bool FRealityDistortionPassProcessor::TryAddMeshBatch(
 	const FMaterialRenderProxy* FinalMaterialProxy = &MaterialRenderProxy;
 	const FMaterial* FinalMaterial = &Material;
 
-	// DepthOnly shader 对“普通不透明材质”常常没有可用 permutation。
-	// 这里沿用引擎深度 Pass 的做法：必要时回退到 DefaultMaterial。
-	const bool bNeedsDefaultMaterial = Material.WritesEveryPixel(false, false)
-		&& !Material.MaterialUsesPixelDepthOffset_RenderThread()
-		&& !Material.MaterialMayModifyMeshPosition();
-
-	if (bNeedsDefaultMaterial)
-	{
-		const FMaterialRenderProxy* DefaultProxy = UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
-		const FMaterial* DefaultMaterial = DefaultProxy->GetMaterialNoFallback(FeatureLevel);
-		if (DefaultMaterial && DefaultMaterial->GetRenderingThreadShaderMap())
-		{
-			FinalMaterialProxy = DefaultProxy;
-			FinalMaterial = DefaultMaterial;
-		}
-	}
-
 	// 计算 Fill/Cull 状态，准备进入 Process 构建 DrawCommand。
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
 	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(*FinalMaterial, OverrideSettings);
-	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(*FinalMaterial, OverrideSettings);
+	// Force two-sided in this pass so inside/outside camera positions render consistently.
+	const ERasterizerCullMode MeshCullMode = CM_None;
 
 	return Process(
 		MeshBatch,
@@ -183,49 +240,25 @@ bool FRealityDistortionPassProcessor::Process(
 {
 	const FVertexFactory* VertexFactory = MeshBatch.VertexFactory;
 
-	// 运行时按名称查询 Depth Pass 的 shader/pipeline。
-	// 这样可以避免直接依赖 Renderer 私有模板类型定义。
-	static FShaderType* DepthVSType = FShaderType::GetShaderTypeByName(TEXT("TDepthOnlyVS<false>"));
-	static FShaderType* DepthPSType = FShaderType::GetShaderTypeByName(TEXT("FDepthOnlyPS"));
-	static const FShaderPipelineType* DepthNoPixelPipeline =
-		FShaderPipelineType::GetShaderPipelineTypeByName(FHashedName(TEXT("DepthNoPixelPipeline")));
-	static const FShaderPipelineType* DepthWithPixelPipeline =
-		FShaderPipelineType::GetShaderPipelineTypeByName(FHashedName(TEXT("DepthPipeline")));
-
-	if (!DepthVSType)
-	{
-		return false;
-	}
-
-	// 只有“不写满像素”或使用 PixelDepthOffset 的材质才需要 PS。
-	const bool bVFTypeSupportsNullPixelShader = VertexFactory->GetType()->SupportsNullPixelShader();
-	const bool bNeedsPixelShader = !MaterialResource.WritesEveryPixel(false, bVFTypeSupportsNullPixelShader)
-		|| MaterialResource.MaterialUsesPixelDepthOffset_RenderThread();
-
+	// RealityDistortion Pass 必须始终使用自定义 PS（输出青色），不能跳过。
+	// 构建 Shader 类型列表
 	FMaterialShaderTypes ShaderTypes;
-	ShaderTypes.AddShaderType(DepthVSType);
-	if (bNeedsPixelShader && DepthPSType)
-	{
-		ShaderTypes.AddShaderType(DepthPSType);
-		ShaderTypes.PipelineType = DepthWithPixelPipeline;
-	}
-	else
-	{
-		ShaderTypes.PipelineType = DepthNoPixelPipeline;
-	}
+	ShaderTypes.AddShaderType<FRealityDistortionVS>();
+	ShaderTypes.AddShaderType<FRealityDistortionPS>();
 
+	// 获取编译好的 Shader
 	FMaterialShaders Shaders;
 	if (!MaterialResource.TryGetShaders(ShaderTypes, VertexFactory->GetType(), Shaders))
 	{
+		UE_LOG(LogRealityDistortion, Warning, TEXT("[RealityDistortion] TryGetShaders FAILED for material: %s, VF: %s"),
+			*MaterialResource.GetFriendlyName(), VertexFactory->GetType()->GetName());
 		return false;
 	}
 
-	TMeshProcessorShaders<FMeshMaterialShader, FMeshMaterialShader> PassShaders;
-	Shaders.TryGetShader(SF_Vertex, PassShaders.VertexShader);
-	if (bNeedsPixelShader)
-	{
-		Shaders.TryGetShader(SF_Pixel, PassShaders.PixelShader);
-	}
+	// 提取 VS 和 PS
+	TMeshProcessorShaders<FRealityDistortionVS, FRealityDistortionPS> PassShaders;
+	Shaders.TryGetVertexShader(PassShaders.VertexShader);
+	Shaders.TryGetPixelShader(PassShaders.PixelShader);
 
 	// ShaderElementData 会把 Primitive/Material 相关绑定数据带到 DrawCommand。
 	FMeshMaterialShaderElementData ShaderElementData;
